@@ -5,76 +5,123 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
-
-def get_local_driver():
+def get_driver():
     chrome_options = Options()
-    # options.add_argument("--headless") # Uncomment if you don't want to see the browser pop up
+    chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument(
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
     service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    return driver
+    return webdriver.Chrome(service=service, options=chrome_options)
 
-
-def scrape_with_selenium(url):
-    driver = get_local_driver()
+def scrape(url, wait_seconds=10):
+    driver = get_driver()
     try:
-        print(f"🌐 Opening browser for: {url}")
+        print(f"  🌐 {url}")
         driver.get(url)
-        time.sleep(6)  # Give the bank's JavaScript time to load interest rates
+        time.sleep(wait_seconds)  # wait for JS to render
 
-        # We grab the HTML and pass it to trafilatura for clean text extraction
-        html_content = driver.page_source
-        text = trafilatura.extract(html_content, include_tables=True)
-        return text if text else ""
+        # Scroll to trigger lazy loading
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(2)
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(1)
+
+        html = driver.page_source
+
+        # Detect broken/empty pages
+        not_found_signals = ["էջը գոյություն չունի", "page not found", "404 not found"]
+        if any(s in html.lower() for s in not_found_signals):
+            print(f"    ⚠️  Page not found")
+            return ""
+
+        # Also detect pages that are just the shell with no real content
+        if len(html) < 5000:
+            print(f"    ⚠️  Page too small ({len(html)} chars) — likely blocked")
+            return ""
+
+        text = trafilatura.extract(
+            html,
+            include_tables=True,
+            include_links=False,
+            no_fallback=False,
+            favor_recall=True,   # extract more content, less strict filtering
+        )
+        result = text.strip() if text else ""
+        print(f"    ✅ {len(result):,} chars extracted")
+        return result
+
     except Exception as e:
-        print(f"❌ Selenium Error: {e}")
+        print(f"    ❌ Error: {e}")
         return ""
     finally:
         driver.quit()
 
 
-# Deep-link mapping with Armenian focus
+# Fixed URLs — using /en/ for Evoca which is confirmed working
 bank_targets = {
     "Mellat Bank": [
         "https://mellatbank.am/hy/pages/consumer-loans",
+        "https://mellatbank.am/hy/pages/mortgage-loans",
         "https://mellatbank.am/hy/pages/term-deposits",
-        "https://mellatbank.am/hy/pages/contacts"
+        "https://mellatbank.am/hy/pages/current-deposits",
+        "https://mellatbank.am/hy/pages/contacts",
     ],
     "Ameriabank": [
-        "https://ameriabank.am/hy/individual/loans",
-        "https://ameriabank.am/hy/individual/deposits",
-        "https://ameriabank.am/hy/contact-us/branches-and-atms"
+        "https://ameriabank.am/hy/fizikakan/varker",
+        "https://ameriabank.am/hy/fizikakan/avananer",
+        "https://ameriabank.am/hy/contact-us/branches-and-atms",
+        "https://ameriabank.am/en/personal/loans",       # fallback
+        "https://ameriabank.am/en/personal/deposits",    # fallback
     ],
     "Evocabank": [
+        # Using /en/ — confirmed working from search results
+        "https://www.evoca.am/en/loans",
+        "https://www.evoca.am/en/deposits",
+        "https://www.evoca.am/en/deposits-important-information",
+        "https://www.evoca.am/en/branches-and-atms",
+        # Also try /hy/ as backup — if they work, great
         "https://www.evoca.am/hy/loans",
         "https://www.evoca.am/hy/deposits",
-        "https://www.evoca.am/hy/branches-and-atms"
-    ]
+        "https://www.evoca.am/hy/branches-and-atms",
+    ],
 }
 
 full_context = ""
 
 for bank_name, urls in bank_targets.items():
-    print(f"\n🏦 Processing {bank_name}...")
-    bank_combined_text = f"\n=== {bank_name.upper()} DATA ===\n"
+    print(f"\n🏦 Scraping: {bank_name}")
+    bank_text = f"\n=== {bank_name.upper()} DATA ===\n"
+    scraped_count = 0
 
     for url in urls:
-        # We use Selenium for all because local environments handle it easily
-        content = scrape_with_selenium(url)
-        if content:
-            bank_combined_text += f"\n--- Source: {url} ---\n{content}\n"
-            print(f"  ✅ Successfully Scraped Section")
-        else:
-            print(f"  ⚠️ Warning: No content found for {url}")
-        time.sleep(2)
+        content = scrape(url)
+        if content and len(content) > 200:
+            bank_text += f"\n--- Source: {url} ---\n{content}\n"
+            scraped_count += 1
+        time.sleep(3)   # polite delay between pages
 
-    full_context += bank_combined_text
+    full_context += bank_text
+    print(f"  → {scraped_count} pages scraped successfully")
 
-# Save the final file locally
 with open("bank_data.txt", "w", encoding="utf-8") as f:
     f.write(full_context)
 
-print("\n✨ SUCCESS! Your local 'bank_data.txt' is ready.")
+# Summary
+print("\n" + "="*50)
+print("DONE! Summary:")
+for bank in ["MELLAT BANK", "AMERIABANK", "EVOCABANK"]:
+    idx = full_context.upper().find(bank)
+    section = full_context[idx:idx+10000] if idx != -1 else ""
+    # Find next bank section boundary
+    next_bank = section.find("=== ", 10)
+    section = section[:next_bank] if next_bank != -1 else section
+    print(f"  {bank}: {len(section):,} chars — {'✅ good' if len(section) > 1000 else '⚠️ thin'}")
