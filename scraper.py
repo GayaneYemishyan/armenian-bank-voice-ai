@@ -29,7 +29,7 @@ def scrape(url, wait_seconds=10):
         driver.get(url)
         time.sleep(wait_seconds)  # wait for JS to render
 
-        # Scroll to trigger lazy loading
+
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(2)
         driver.execute_script("window.scrollTo(0, 0);")
@@ -37,13 +37,11 @@ def scrape(url, wait_seconds=10):
 
         html = driver.page_source
 
-        # Detect broken/empty pages
         not_found_signals = ["էջը գոյություն չունի", "page not found", "404 not found"]
         if any(s in html.lower() for s in not_found_signals):
             print(f"    ⚠️  Page not found")
             return ""
 
-        # Also detect pages that are just the shell with no real content
         if len(html) < 5000:
             print(f"    ⚠️  Page too small ({len(html)} chars) — likely blocked")
             return ""
@@ -53,7 +51,7 @@ def scrape(url, wait_seconds=10):
             include_tables=True,
             include_links=False,
             no_fallback=False,
-            favor_recall=True,   # extract more content, less strict filtering
+            favor_recall=True,
         )
         result = text.strip() if text else ""
         print(f"    ✅ {len(result):,} chars extracted")
@@ -66,29 +64,27 @@ def scrape(url, wait_seconds=10):
         driver.quit()
 
 
-# Fixed URLs — using /en/ for Evoca which is confirmed working
 bank_targets = {
     "Mellat Bank": [
         "https://mellatbank.am/hy/pages/consumer-loans",
-        "https://mellatbank.am/hy/pages/mortgage-loans",
-        "https://mellatbank.am/hy/pages/term-deposits",
+        "https://mellatbank.am/hy/loans_individual",
+        "https://mellatbank.am/hy/Deposits",
         "https://mellatbank.am/hy/pages/current-deposits",
         "https://mellatbank.am/hy/pages/contacts",
     ],
     "Ameriabank": [
-        "https://ameriabank.am/hy/fizikakan/varker",
-        "https://ameriabank.am/hy/fizikakan/avananer",
-        "https://ameriabank.am/hy/contact-us/branches-and-atms",
-        "https://ameriabank.am/en/personal/loans",       # fallback
-        "https://ameriabank.am/en/personal/deposits",    # fallback
+        "https://ameriabank.am/",
+        "https://ameriabank.am/loans/consumer-loans",
+        "https://ameriabank.am/personal/saving/deposits/ameria-deposit",
+        "https://ameriabank.am/en/personal/loans",
+        "https://ameriabank.am/en/personal/deposits",
     ],
     "Evocabank": [
-        # Using /en/ — confirmed working from search results
+        "https://www.evoca.am/hy/"
         "https://www.evoca.am/en/loans",
         "https://www.evoca.am/en/deposits",
         "https://www.evoca.am/en/deposits-important-information",
         "https://www.evoca.am/en/branches-and-atms",
-        # Also try /hy/ as backup — if they work, great
         "https://www.evoca.am/hy/loans",
         "https://www.evoca.am/hy/deposits",
         "https://www.evoca.am/hy/branches-and-atms",
@@ -107,7 +103,7 @@ for bank_name, urls in bank_targets.items():
         if content and len(content) > 200:
             bank_text += f"\n--- Source: {url} ---\n{content}\n"
             scraped_count += 1
-        time.sleep(3)   # polite delay between pages
+        time.sleep(3)
 
     full_context += bank_text
     print(f"  → {scraped_count} pages scraped successfully")
@@ -115,13 +111,11 @@ for bank_name, urls in bank_targets.items():
 with open("bank_data.txt", "w", encoding="utf-8") as f:
     f.write(full_context)
 
-# Summary
 print("\n" + "="*50)
 print("DONE! Summary:")
 for bank in ["MELLAT BANK", "AMERIABANK", "EVOCABANK"]:
     idx = full_context.upper().find(bank)
     section = full_context[idx:idx+10000] if idx != -1 else ""
-    # Find next bank section boundary
     next_bank = section.find("=== ", 10)
     section = section[:next_bank] if next_bank != -1 else section
     print(f"  {bank}: {len(section):,} chars — {'✅ good' if len(section) > 1000 else '⚠️ thin'}")
