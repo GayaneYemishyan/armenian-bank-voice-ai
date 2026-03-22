@@ -2,17 +2,16 @@
 agent.py — Armenian Bank Voice AI Agent
 LiveKit Agents v1.5 API
 ════════════════════════════════════════
-STT : Deepgram Nova-3 (Armenian)
-LLM : Groq llama-3.3-70b (via livekit-plugins-groq)
-TTS : ElevenLabs eleven_multilingual_v2
+STT : Deepgram (Nova-2) - Auto-detect language
+LLM : Groq (Llama 3.3 70B) - Context trimmed
+TTS : ElevenLabs - Free tier
 """
 
 import asyncio
 import logging
-import os
 from pathlib import Path
-
 from dotenv import load_dotenv
+
 load_dotenv()
 
 from livekit.agents import (
@@ -22,14 +21,15 @@ from livekit.agents import (
     JobProcess,
     WorkerOptions,
     cli,
+    llm,
 )
-from livekit.plugins import deepgram, elevenlabs
-from livekit.plugins import groq as groq_plugin
+from livekit.plugins import groq, deepgram, elevenlabs
 
 log = logging.getLogger("armenian-bank-agent")
 
 # ── Load bank data ─────────────────────────────────────────────────────────────
 DATA_FILE = Path(__file__).parent / "bank_data.txt"
+
 
 def load_bank_data() -> str:
     if DATA_FILE.exists():
@@ -39,36 +39,39 @@ def load_bank_data() -> str:
     log.error("bank_data.txt not found at %s", DATA_FILE)
     return "No bank data available. Please run the scraper first."
 
-# ── Context trimmer — keeps tokens under Groq free limit ──────────────────────
+
+# ── Context trimmer ────────────────────────────────────────────────────────────
 def get_relevant_context(question: str, full_data: str) -> str:
+    """
+    Returns relevant section of bank data to keep tokens low for Groq Free Tier.
+    """
     q = question.lower()
     bank_keywords = {
         "AMERIABANK": ["ameria", "ամերիա"],
-        "EVOCABANK":  ["evoca", "էվոկա"],
-        "MELLAT":     ["mellat", "մելլաթ"],
+        "EVOCABANK": ["evoca", "էվոկա"],
+        "MELLAT": ["mellat", "մելլաթ"],
     }
-    mentioned = [
-        b for b, kws in bank_keywords.items()
-        if any(k in q for k in kws)
-    ]
-    if len(mentioned) == 1:
-        lines = full_data.split("\n")
-        capture, section = False, []
-        for line in lines:
-            if mentioned[0] in line.upper() and "===" in line:
-                capture = True
-            elif "===" in line and capture and section:
-                break
-            if capture:
-                section.append(line)
-        if section:
-            return "\n".join(section)[:5000]
-    parts = []
+
+    mentioned_banks = []
+    for bank_name, keywords in bank_keywords.items():
+        if any(k in q for k in keywords):
+            mentioned_banks.append(bank_name)
+
+    if len(mentioned_banks) == 1:
+        target_bank = mentioned_banks[0]
+        start_marker = f"=== {target_bank} DATA ==="
+        start_idx = full_data.find(start_marker)
+        if start_idx != -1:
+            return full_data[start_idx:start_idx + 6000]  # Limit to 6k chars
+
+    # Default: Summary of first 1.5k chars of each bank
+    summary = []
     for bank in ["AMERIABANK", "EVOCABANK", "MELLAT"]:
-        idx = full_data.upper().find(bank)
-        if idx != -1:
-            parts.append(full_data[idx:idx + 2000])
-    return "\n\n---\n\n".join(parts)
+        start = full_data.find(f"=== {bank} DATA ===")
+        if start != -1:
+            summary.append(full_data[start:start + 1500])
+    return "\n\n".join(summary)
+
 
 # ── System instructions ────────────────────────────────────────────────────────
 SYSTEM_INSTRUCTIONS = """\
@@ -83,12 +86,10 @@ SYSTEM_INSTRUCTIONS = """\
    - Մասնաճյուղեր և կոնտակտներ (Branch Locations and Contacts)
 4. Եթե հարցը վերաբերում է այլ թեմայի, քաղաքավարի կերպով մերժիր հայերենով.
 5. Եթե տվյալները բացակայում են, ասա դա ուղղակի. մի հորինիր:
-6. Կարճ, հստակ նախադասություններ. սա ձայնային ինտերֆեյս է:
 
 ԲԱՆԿԱՅԻՆ ՏՎՅԱԼՆԵՐ (BANK KNOWLEDGE BASE):
 {bank_data}
-
-END OF KNOWLEDGE BASE"""
+"""
 
 GREETING_HY = (
     "Բարև ձեզ: Ես Հայկական բանկերի AI օգնականն եմ: "
@@ -97,66 +98,46 @@ GREETING_HY = (
     "Ինչո՞վ կարող եմ օգնել ձեզ:"
 )
 
-# ── Prewarm ────────────────────────────────────────────────────────────────────
-def prewarm(proc: JobProcess):
-    log.info("Prewarming: loading bank data...")
-    proc.userdata["bank_data"] = load_bank_data()
-
-    try:
-        from livekit.plugins import silero
-        proc.userdata["vad"] = silero.VAD.load()
-        log.info("Silero VAD loaded OK")
-    except Exception as e:
-        log.warning("Silero VAD unavailable (%s) — using Deepgram endpointing", e)
-        proc.userdata["vad"] = None
 
 # ── Agent class ────────────────────────────────────────────────────────────────
 class ArmenianBankAgent(Agent):
-    def __init__(self, bank_data: str) -> None:
-        instructions = SYSTEM_INSTRUCTIONS.format(
-            bank_data=bank_data[:8000]
-        )
-        super().__init__(instructions=instructions)
+    def __init__(self, full_bank_data: str) -> None:
+        self.full_bank_data = full_bank_data
+        initial_context = get_relevant_context("", full_bank_data)
 
-# ── Entrypoint ─────────────────────────────────────────────────────────────────
+        super().__init__(
+            instructions=SYSTEM_INSTRUCTIONS.format(bank_data=initial_context)
+        )
+
+    # Dynamic Context Injection (Replaces deprecated methods)
+    # The agent will naturally use the `instructions` we set in __init__
+    # To update it dynamically, we would need to hook into the chat loop,
+    # but for simplicity and stability, let's stick to the static instructions
+    # or rely on the LLM's context window handling.
+    #
+    # However, to avoid the 413 error again, we keep the constructor simple.
+
+
+# ── Entrypoint ───────────────────────────��─────────────────────────────────────
 async def entrypoint(ctx: JobContext):
     full_bank_data: str = ctx.proc.userdata["bank_data"]
-    vad = ctx.proc.userdata.get("vad")
 
     await ctx.connect()
     log.info("Connected to room: %s", ctx.room.name)
 
+    agent = ArmenianBankAgent(full_bank_data=full_bank_data)
+
     session = AgentSession(
-        vad=vad,
-        stt=deepgram.STT(
-            model="nova-3",
-            language="hy",
-            smart_format=True,
-            punctuate=True,
-            endpointing_ms=300,
-        ),
-        llm=groq_plugin.LLM(
-            model="llama-3.3-70b-versatile",
-        ),
-        tts=elevenlabs.TTS(
-            voice_id="21m00Tcm4TlvDq8ikWAM",
-            model="eleven_multilingual_v2",
-        ),
+        vad=None,
+        stt=deepgram.STT(model="nova-2", smart_format=True),
+        llm=groq.LLM(model="llama-3.3-70b-versatile"),
+        tts=elevenlabs.TTS(model="eleven_multilingual_v2", voice_id="21m00Tcm4TlvDq8ikWAM"),
     )
 
-    try:
-        await session.start(
-            room=ctx.room,
-            agent=ArmenianBankAgent(bank_data=full_bank_data),
-        )
-        log.info("Session started successfully")
-    except Exception as e:
-        log.error("Session start failed: %s", e)
-        return
+    await session.start(room=ctx.room, agent=agent)
+    log.info("Session started successfully")
 
-        # Wait for session to be fully ready then generate greeting
-    await asyncio.sleep(2)
-
+    await asyncio.sleep(1)
     try:
         await session.generate_reply(
             instructions="Greet the user in Armenian with the following message: " + GREETING_HY
@@ -165,22 +146,19 @@ async def entrypoint(ctx: JobContext):
     except Exception as e:
         log.error("Greeting CRASHED: %s", e, exc_info=True)
 
-    log.info("Reached keep-alive")
     try:
         await asyncio.Event().wait()
     except Exception as e:
         log.error("Keep-alive error: %s", e, exc_info=True)
 
+
+# ── Prewarm ────────────────────────────────────────────────────────────────────
+def prewarm(proc: JobProcess):
+    log.info("Prewarming: loading bank data...")
+    proc.userdata["bank_data"] = load_bank_data()
+
+
 # ── Run ────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
-    )
-    cli.run_app(
-        WorkerOptions(
-            entrypoint_fnc=entrypoint,
-            prewarm_fnc=prewarm,
-            agent_name="armenian-bank-agent",
-        )
-    )
+    logging.basicConfig(level=logging.INFO)
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint, prewarm_fnc=prewarm, agent_name="armenian-bank-agent"))
