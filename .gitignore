@@ -2,4 +2,4 @@
 .venv
 bank_data.txt
 .idea
-
+.env

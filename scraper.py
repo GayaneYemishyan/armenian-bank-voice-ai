@@ -8,20 +8,18 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+
 def get_driver():
     chrome_options = Options()
-    chrome_options.add_argument("--headless")
+    # Uncomment the next line if you don't want a browser window popping up
+    # chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument(
-        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    )
-    service = Service(ChromeDriverManager().install())
-    return webdriver.Chrome(service=service, options=chrome_options)
 
+    # This automatically downloads the correct driver for your Chrome version
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+    return driver
 def scrape(url, wait_seconds=10):
     driver = get_driver()
     try:
@@ -78,9 +76,12 @@ bank_targets = {
         "https://ameriabank.am/personal/saving/deposits/ameria-deposit",
         "https://ameriabank.am/en/personal/loans",
         "https://ameriabank.am/en/personal/deposits",
+        "https://ameriabank.am/personal/loans/mortgage/primary-market-loan",
+        "https://ameriabank.am/personal/loans/mortgage/secondary-market",
+        "https://myhome.am/"
     ],
     "Evocabank": [
-        "https://www.evoca.am/hy/"
+        "https://www.evoca.am/hy/",
         "https://www.evoca.am/en/loans",
         "https://www.evoca.am/en/deposits",
         "https://www.evoca.am/en/deposits-important-information",
@@ -119,3 +120,42 @@ for bank in ["MELLAT BANK", "AMERIABANK", "EVOCABANK"]:
     next_bank = section.find("=== ", 10)
     section = section[:next_bank] if next_bank != -1 else section
     print(f"  {bank}: {len(section):,} chars — {'✅ good' if len(section) > 1000 else '⚠️ thin'}")
+ameriabank_branches = """
+--- AMERIABANK BRANCH LOCATIONS ---
+1. Գլխամասային գրասենյակ - ՀՀ, ք. Երևան, 0010, Վազգեն Սարգսյան 2
+2. «Կամար» մ/ճ - ՀՀ, ք. Երևան, 0010, Վազգեն Սարգսյան 2, «Կամար» բիզնես կենտրոնի 1-ին հարկ
+3. «Սայաթ-Նովա» մ/ճ - ՀՀ, ք. Երևան, 0001, Սայաթ-Նովա պողոտա 8 շենք, 47 տարածք
+4. «Կոմիտաս» մ/ճ - ՀՀ, ք. Երևան, 0033, Կոմիտաս 12, շ. 102
+5. «Մոսկովյան» մ/ճ - ՀՀ, ք. Երևան, 0009, Մաշտոցի պողոտա 48, 2/1 տարածք
+6. «Շենգավիթ» մ/ճ - ՀՀ, ք. Երևան, 0046, Բագրատունյաց փ. 18 շ., 112 տարածք
+7. «Մալաթիա» մ/ճ - ՀՀ, Երևան ք., Մալաթիա-Սեբաստիա վարչական շրջան, Զ. Անդրանիկի փող. 40/4
+8. «Զեյթուն» մ/ճ - ՀՀ, ք. Երևան, Հ. Ներսիսյան փ. 1 շենք, 127
+9. «Ավան» մ/ճ - ՀՀ, ք. Երևան, Խուդյակովի 175/1
+10. «Խորենացի» գրասենյակ - ՀՀ, ք. Երևան, Խորենաց 17/35
+11. «Կումայրի» մ/ճ - ՀՀ, Շիրակի մարզ, ք. Գյումրի, Աբովյան փ. 248/7
+12. «Ջերմուկ» մ/ճ - ՀՀ, Վայոց Ձորի մարզ, ք. Ջերմուկ, 3701, Շահումյան 14/3
+13. «Աբովյան» մ/ճ - ՀՀ, Կոտայքի մարզ, ք. Աբովյան, 2205, Սահմանադրության հրապ. 7/2
+14. «Էջմիածին» մ/ճ - ՀՀ, Արմավիրի մարզ, ք. Էջմիածին, Մաշտոցի փողոց 69/51
+15. «Հրազդան» մ/ճ - ՀՀ, Կոտայքի մարզ, Հրազդան ք., Միկրոշրջան թաղամաս, Զ. Անդրանիկի պողոտա 139
+Հեռախոս (Գլխամասային): +374 10 56 11 11
+Կայք: ameriabank.am
+"""
+
+# Read existing file
+with open("bank_data.txt", "r", encoding="utf-8") as f:
+    data = f.read()
+
+# Insert before Evocabank section (or append if not found)
+if "=== EVOCABANK DATA ===" in data:
+    data = data.replace("=== EVOCABANK DATA ===", ameriabank_branches + "\n=== EVOCABANK DATA ===")
+elif "EVOCABANK" in data.upper():
+    idx = data.upper().find("EVOCABANK")
+    data = data[:idx] + ameriabank_branches + "\n" + data[idx:]
+else:
+    data += "\n" + ameriabank_branches
+
+with open("bank_data.txt", "w", encoding="utf-8") as f:
+    f.write(data)
+
+# Verify it worked
+print("Done!")
