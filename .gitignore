@@ -1,6 +1,5 @@
 # created by virtualenv automatically
 .venv
-bank_data.txt
 .idea
 .env
 venv312
