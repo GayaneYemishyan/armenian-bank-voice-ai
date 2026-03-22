@@ -1,13 +1,13 @@
 """
 agent.py — Armenian Bank Voice AI Agent
-LiveKit Agents v1.5 API (AgentSession + Agent)
-════════════════════════════════════════════════
+LiveKit Agents v1.5 API
+════════════════════════════════════════
 STT : Deepgram Nova-3 (Armenian)
 LLM : Groq llama-3.3-70b (via livekit-plugins-groq)
 TTS : ElevenLabs eleven_multilingual_v2
-VAD : Silero (graceful fallback if DLL fails on Python 3.14)
 """
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -51,7 +51,6 @@ def get_relevant_context(question: str, full_data: str) -> str:
         b for b, kws in bank_keywords.items()
         if any(k in q for k in kws)
     ]
-    # Single bank mentioned — return only that bank's section
     if len(mentioned) == 1:
         lines = full_data.split("\n")
         capture, section = False, []
@@ -64,7 +63,6 @@ def get_relevant_context(question: str, full_data: str) -> str:
                 section.append(line)
         if section:
             return "\n".join(section)[:5000]
-    # Comparison or unspecified — 2000 chars per bank
     parts = []
     for bank in ["AMERIABANK", "EVOCABANK", "MELLAT"]:
         idx = full_data.upper().find(bank)
@@ -104,28 +102,21 @@ def prewarm(proc: JobProcess):
     log.info("Prewarming: loading bank data...")
     proc.userdata["bank_data"] = load_bank_data()
 
-    # Try Silero VAD — skip gracefully if onnxruntime DLL fails (Python 3.14)
     try:
         from livekit.plugins import silero
         proc.userdata["vad"] = silero.VAD.load()
-        proc.userdata["has_vad"] = True
         log.info("Silero VAD loaded OK")
     except Exception as e:
-        log.warning("Silero VAD unavailable (%s) — turn detection via STT endpointing", e)
+        log.warning("Silero VAD unavailable (%s) — using Deepgram endpointing", e)
         proc.userdata["vad"] = None
-        proc.userdata["has_vad"] = False
 
-# ── Armenian Bank Agent class ──────────────────────────────────────────────────
+# ── Agent class ────────────────────────────────────────────────────────────────
 class ArmenianBankAgent(Agent):
     def __init__(self, bank_data: str) -> None:
         instructions = SYSTEM_INSTRUCTIONS.format(
-            bank_data=bank_data[:8000]   # trim to stay within token limits
+            bank_data=bank_data[:8000]
         )
         super().__init__(instructions=instructions)
-
-    async def on_enter(self) -> None:
-        """Speak greeting when agent enters the session."""
-        await self.session.say(GREETING_HY)
 
 # ── Entrypoint ─────────────────────────────────────────────────────────────────
 async def entrypoint(ctx: JobContext):
@@ -133,32 +124,52 @@ async def entrypoint(ctx: JobContext):
     vad = ctx.proc.userdata.get("vad")
 
     await ctx.connect()
+    log.info("Connected to room: %s", ctx.room.name)
 
-    # Build session with STT + LLM + TTS
     session = AgentSession(
-        vad=vad,   # None if Silero failed — Deepgram endpointing takes over
+        vad=vad,
         stt=deepgram.STT(
             model="nova-3",
             language="hy",
             smart_format=True,
             punctuate=True,
-            endpointing=300,   # 300ms silence = end of turn
+            endpointing_ms=300,
         ),
         llm=groq_plugin.LLM(
             model="llama-3.3-70b-versatile",
         ),
         tts=elevenlabs.TTS(
-            voice_id="21m00Tcm4TlvDq8ikWAM",     # Rachel — clear neutral voice
-            model="eleven_multilingual_v2",        # supports Armenian
+            voice_id="21m00Tcm4TlvDq8ikWAM",
+            model="eleven_multilingual_v2",
         ),
     )
 
-    await session.start(
-        room=ctx.room,
-        agent=ArmenianBankAgent(bank_data=full_bank_data),
-    )
+    try:
+        await session.start(
+            room=ctx.room,
+            agent=ArmenianBankAgent(bank_data=full_bank_data),
+        )
+        log.info("Session started successfully")
+    except Exception as e:
+        log.error("Session start failed: %s", e)
+        return
 
-    log.info("Agent started in room: %s", ctx.room.name)
+        # Wait for session to be fully ready then generate greeting
+    await asyncio.sleep(2)
+
+    try:
+        await session.generate_reply(
+            instructions="Greet the user in Armenian with the following message: " + GREETING_HY
+        )
+        log.info("Greeting sent successfully")
+    except Exception as e:
+        log.error("Greeting CRASHED: %s", e, exc_info=True)
+
+    log.info("Reached keep-alive")
+    try:
+        await asyncio.Event().wait()
+    except Exception as e:
+        log.error("Keep-alive error: %s", e, exc_info=True)
 
 # ── Run ────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
@@ -170,5 +181,6 @@ if __name__ == "__main__":
         WorkerOptions(
             entrypoint_fnc=entrypoint,
             prewarm_fnc=prewarm,
+            agent_name="armenian-bank-agent",
         )
     )
